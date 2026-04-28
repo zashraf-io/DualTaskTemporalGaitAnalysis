@@ -131,6 +131,12 @@ def detect_events(
             distance=ic_dist,
         )
 
+        # Filter IC events to remove anomalous peaks (e.g. at interval boundaries)
+        # by requiring them to be within a small margin of the median peak value.
+        if len(ic_idx) > 0:
+            median_ic_y = np.median(heel_y[ic_idx])
+            ic_idx = [idx for idx in ic_idx if abs(heel_y[idx] - median_ic_y) <= 0.05]
+
         for idx in ic_idx:
             events.append({
                 "foot":       side,
@@ -147,6 +153,11 @@ def detect_events(
             prominence=_FO_PROMINENCE_M,
             distance=fo_dist,
         )
+
+        # Filter FO events to remove anomalous peaks
+        if len(fo_idx) > 0:
+            median_fo_y = np.median(toe_y[fo_idx])
+            fo_idx = [idx for idx in fo_idx if abs(toe_y[idx] - median_fo_y) <= 0.05]
 
         for idx in fo_idx:
             events.append({
