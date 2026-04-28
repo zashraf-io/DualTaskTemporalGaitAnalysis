@@ -455,7 +455,7 @@ class PipelineRunner(QThread):
             logging.info(
                 f"Reusing cached TRC for {cond}: {cached['trc']}"
             )
-            self.progress.emit(f"sports2d_{cond}", "done", 100)
+            self.progress.emit(f"sports2d_{cond}", "complete", 100)
             return cached
 
         if self.segment_mode:
@@ -558,7 +558,7 @@ class PipelineRunner(QThread):
         for seg_video in segment_videos:
             seg_video.unlink(missing_ok=True)
 
-        self.progress.emit(f"sports2d_{cond}", "done", 100)
+        self.progress.emit(f"sports2d_{cond}", "complete", 100)
 
         return {
             "trc": str(merged_trc),

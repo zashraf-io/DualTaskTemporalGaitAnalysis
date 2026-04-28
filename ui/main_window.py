@@ -921,6 +921,374 @@ class VideoTab(QWidget):
         self._s2d_label.setVisible(False)
 
 
+class DiagnosticsTab(QWidget):
+    """Tab showing event detection diagnostics: counts, trajectory plots
+    with HS/TO markers, and enter/exit boundary lines."""
+
+    # Available trajectory views — (display_name, y_col, event_type, marker_col_suffix)
+    _VIEWS = [
+        ("Heel Y  (HS events)", "heel_y", "HS", "heel_y"),
+        ("Toe Y   (TO events)", "toe_y",  "TO", "toe_y"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: dict = {}           # keyed by cond: {traj, events, raw, clean, boundaries}
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+
+        # Top bar: condition + marker selectors
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Condition:"))
+        self._cond_combo = QComboBox()
+        self._cond_combo.addItems(["Single-Task (ST)", "Dual-Task (DT)"])
+        self._cond_combo.currentIndexChanged.connect(self._refresh)
+        self._cond_combo.setFixedWidth(180)
+        top.addWidget(self._cond_combo)
+
+        top.addSpacing(20)
+        top.addWidget(QLabel("View:"))
+        self._view_combo = QComboBox()
+        for name, *_ in self._VIEWS:
+            self._view_combo.addItem(name)
+        self._view_combo.currentIndexChanged.connect(self._refresh)
+        self._view_combo.setFixedWidth(200)
+        top.addWidget(self._view_combo)
+        top.addStretch()
+        lay.addLayout(top)
+
+        # Summary cards row
+        self._cards_widget = QWidget()
+        self._cards_layout = QHBoxLayout(self._cards_widget)
+        self._cards_layout.setContentsMargins(0, 4, 0, 4)
+
+        card_style = (
+            f"background: {C_SURFACE}; border-radius: 8px; padding: 10px;"
+            f"font-family: 'Segoe UI', sans-serif;"
+        )
+        self._event_card = QLabel("No data")
+        self._event_card.setStyleSheet(card_style)
+        self._event_card.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._event_card.setMinimumWidth(240)
+        self._event_card.setWordWrap(True)
+
+        self._stride_card = QLabel("No data")
+        self._stride_card.setStyleSheet(card_style)
+        self._stride_card.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._stride_card.setMinimumWidth(320)
+        self._stride_card.setWordWrap(True)
+
+        self._cards_layout.addWidget(self._event_card)
+        self._cards_layout.addWidget(self._stride_card)
+        self._cards_layout.addStretch()
+        lay.addWidget(self._cards_widget)
+
+        # Plot area
+        self._plot_holder = QWidget()
+        self._plot_layout = QVBoxLayout(self._plot_holder)
+        self._plot_layout.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._plot_holder, stretch=1)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def load_data(
+        self,
+        traj_st: "pd.DataFrame | None" = None,
+        traj_dt: "pd.DataFrame | None" = None,
+        events_st: "pd.DataFrame | None" = None,
+        events_dt: "pd.DataFrame | None" = None,
+        raw_strides_st: "pd.DataFrame | None" = None,
+        raw_strides_dt: "pd.DataFrame | None" = None,
+        clean_strides_st: "pd.DataFrame | None" = None,
+        clean_strides_dt: "pd.DataFrame | None" = None,
+        boundaries_csv_st: str = "",
+        boundaries_csv_dt: str = "",
+        speed_factor: float = 1.0,
+    ):
+        """Load all diagnostic data. Call after pipeline finishes."""
+        self._data = {}
+        for cond, traj, evts, raw, clean, bcsv in [
+            ("st", traj_st, events_st, raw_strides_st, clean_strides_st, boundaries_csv_st),
+            ("dt", traj_dt, events_dt, raw_strides_dt, clean_strides_dt, boundaries_csv_dt),
+        ]:
+            if traj is not None and not traj.empty:
+                self._data[cond] = {
+                    "traj": traj,
+                    "events": evts,
+                    "raw": raw,
+                    "clean": clean,
+                    "boundaries_csv": bcsv,
+                }
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _current_cond(self) -> str:
+        return "st" if self._cond_combo.currentIndex() == 0 else "dt"
+
+    def _current_view(self) -> tuple:
+        idx = self._view_combo.currentIndex()
+        return self._VIEWS[idx]
+
+    def _refresh(self):
+        cond = self._current_cond()
+        data = self._data.get(cond)
+
+        if not data:
+            self._event_card.setText("No data loaded for this condition.")
+            self._stride_card.setText("")
+            self._clear_plot()
+            return
+
+        self._update_cards(data, cond)
+        self._update_plot(data, cond)
+
+    # ------------------------------------------------------------------
+    # Summary cards
+    # ------------------------------------------------------------------
+
+    def _update_cards(self, data: dict, cond: str):
+        evts = data.get("events")
+        raw = data.get("raw")
+        clean = data.get("clean")
+
+        # Event counts card
+        lines = [f"<b style='color:{C_ACCENT};'>Detected Events ({cond.upper()})</b><br>"]
+        if evts is not None and not evts.empty:
+            for foot, col in [("Left", C_LEFT_FOOT), ("Right", C_RIGHT_FOOT)]:
+                side = foot.lower()
+                hs = len(evts[(evts["foot"] == side) & (evts["event_type"] == "HS")])
+                to = len(evts[(evts["foot"] == side) & (evts["event_type"] == "TO")])
+                lines.append(
+                    f"<span style='color:{col};'>{foot}</span>: "
+                    f"<b>{hs}</b> HS &nbsp;&nbsp; <b>{to}</b> TO<br>"
+                )
+        else:
+            lines.append("No events detected.<br>")
+        self._event_card.setText("".join(lines))
+
+        # Stride counts card
+        lines = [f"<b style='color:{C_ACCENT};'>Stride Counts ({cond.upper()})</b><br>"]
+        if clean is not None and not clean.empty:
+            total = len(clean)
+            outlier = int(clean["is_outlier"].sum()) if "is_outlier" in clean.columns else 0
+            valid = total - outlier
+            valid_l = len(clean[(clean["is_outlier"] != True) & (clean["foot"] == "left")])
+            valid_r = len(clean[(clean["is_outlier"] != True) & (clean["foot"] == "right")])
+
+            warn_l = " <span style='color:#e05c5c;'>(!)</span>" if valid_l < 8 else ""
+            warn_r = " <span style='color:#e05c5c;'>(!)</span>" if valid_r < 8 else ""
+
+            lines.append(f"Total strides: <b>{total}</b><br>")
+            lines.append(f"Outliers removed: <b>{outlier}</b><br>")
+            lines.append(
+                f"Valid: <b>{valid}</b> &nbsp; "
+                f"(<span style='color:{C_LEFT_FOOT};'>L:{valid_l}</span>{warn_l} / "
+                f"<span style='color:{C_RIGHT_FOOT};'>R:{valid_r}</span>{warn_r})<br>"
+            )
+
+            # Removal reasons breakdown
+            if "removal_reason" in clean.columns:
+                reasons = clean[clean["is_outlier"] == True]["removal_reason"].value_counts()
+                if len(reasons) > 0:
+                    reason_str = ", ".join(f"{r}: {c}" for r, c in reasons.items())
+                    lines.append(f"<span style='color:{C_MUTED};'>Reasons: {reason_str}</span><br>")
+
+            # Stride time stats
+            valid_df = clean[clean["is_outlier"] != True]
+            if "stride_times" in valid_df.columns and len(valid_df) > 0:
+                st_vals = valid_df["stride_times"]
+                lines.append(
+                    f"<br>Stride time: <b>{st_vals.mean():.3f}s</b> "
+                    f"(range {st_vals.min():.3f} - {st_vals.max():.3f}s)"
+                )
+        elif raw is not None and not raw.empty:
+            lines.append(f"Raw strides: <b>{len(raw)}</b> (no cleaning done)<br>")
+        else:
+            lines.append("No strides computed.<br>")
+
+        self._stride_card.setText("".join(lines))
+
+    # ------------------------------------------------------------------
+    # Plotting
+    # ------------------------------------------------------------------
+
+    def _clear_plot(self):
+        while self._plot_layout.count():
+            item = self._plot_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _update_plot(self, data: dict, cond: str):
+        self._clear_plot()
+        _, y_suffix, event_type, _ = self._current_view()
+
+        traj = data["traj"]
+        evts = data.get("events")
+        boundaries = self._parse_boundary_csv(data.get("boundaries_csv", ""))
+
+        if HAS_PYQTGRAPH:
+            self._pg_plot(traj, evts, boundaries, y_suffix, event_type, cond)
+        else:
+            self._mpl_plot(traj, evts, boundaries, y_suffix, event_type, cond)
+
+    def _parse_boundary_csv(self, csv_path: str) -> list:
+        """Parse boundary CSV into list of {'time_s': float, 'event': str}."""
+        if not csv_path:
+            return []
+        from pathlib import Path
+        p = Path(csv_path)
+        if not p.exists() or p.stat().st_size == 0:
+            return []
+        try:
+            df = pd.read_csv(p)
+        except Exception:
+            return []
+        if "time_s" not in df.columns or "event" not in df.columns:
+            return []
+
+        events = []
+        for _, row in df.iterrows():
+            t_str = str(row["time_s"]).strip()
+            try:
+                if ":" in t_str:
+                    parts = t_str.split(":")
+                    t = 0.0
+                    for part in parts:
+                        t = t * 60 + float(part)
+                else:
+                    t = float(t_str)
+            except ValueError:
+                continue
+            ev = str(row["event"]).strip().lower()
+            if ev in ("enter", "exit"):
+                events.append({"time_s": t, "event": ev})
+        events.sort(key=lambda e: e["time_s"])
+        return events
+
+    def _pg_plot(self, traj, evts, boundaries, y_suffix, event_type, cond):
+        """Build a pyqtgraph plot widget."""
+        pw = pg.PlotWidget(
+            title=f"{y_suffix.replace('_', ' ').title()} Trajectory + {event_type} Events — {cond.upper()}"
+        )
+        pw.setBackground(C_SURFACE)
+        pw.showGrid(x=True, y=True, alpha=0.3)
+        pw.setLabel("left", y_suffix.replace("_", " ") + " (m)", color=C_MUTED)
+        pw.setLabel("bottom", "Time (s)", color=C_MUTED)
+
+        times = traj["time_s"].values
+
+        # Plot trajectories for both sides
+        for side, col_hex in [("left", C_LEFT_FOOT), ("right", C_RIGHT_FOOT)]:
+            col_name = f"{side}_{y_suffix}"
+            if col_name not in traj.columns:
+                continue
+            yvals = traj[col_name].values
+            col_rgb = QColor(col_hex)
+            pen = pg.mkPen(color=col_rgb, width=1.5)
+            pw.plot(times, yvals, pen=pen, name=f"{side} {y_suffix}")
+
+        # Overlay event markers
+        if evts is not None and not evts.empty:
+            for side, col_hex, sym in [("left", C_LEFT_FOOT, "t1"), ("right", C_RIGHT_FOOT, "t")]:
+                col_name = f"{side}_{y_suffix}"
+                if col_name not in traj.columns:
+                    continue
+                side_evts = evts[(evts["foot"] == side) & (evts["event_type"] == event_type)]
+                if side_evts.empty:
+                    continue
+                evt_times = side_evts["time_s"].values
+                # Find closest traj Y value for each event
+                traj_times = traj["time_s"].values
+                traj_y = traj[col_name].values
+                evt_y = []
+                for et in evt_times:
+                    idx = np.argmin(np.abs(traj_times - et))
+                    evt_y.append(traj_y[idx])
+                evt_y = np.array(evt_y)
+
+                scatter = pg.ScatterPlotItem(
+                    x=evt_times, y=evt_y,
+                    brush=pg.mkBrush(QColor(col_hex)),
+                    pen=pg.mkPen(None),
+                    size=8,
+                    symbol=sym,
+                    name=f"{side} {event_type} ({len(evt_times)})",
+                )
+                pw.addItem(scatter)
+
+        # Boundary vertical lines
+        for bev in boundaries:
+            t = bev["time_s"]
+            ev_type = bev["event"]
+            color = "#5cb85c" if ev_type == "enter" else "#e05c5c"
+            line = pg.InfiniteLine(
+                pos=t, angle=90,
+                pen=pg.mkPen(color=color, width=1.5, style=Qt.PenStyle.DashLine),
+                label=ev_type,
+                labelOpts={"color": color, "position": 0.95, "rotateAxis": (1, 0)},
+            )
+            pw.addItem(line)
+
+        pw.addLegend(offset=(10, 10))
+        self._plot_layout.addWidget(pw)
+
+    def _mpl_plot(self, traj, evts, boundaries, y_suffix, event_type, cond):
+        """Build a matplotlib fallback plot."""
+        fig, ax = plt.subplots(figsize=(10, 4))
+        fig.patch.set_facecolor(C_SURFACE)
+        ax.set_facecolor(C_BG)
+        ax.tick_params(colors=C_MUTED)
+        ax.spines[:].set_color(C_MUTED)
+        ax.set_title(
+            f"{y_suffix.replace('_', ' ').title()} + {event_type} Events — {cond.upper()}",
+            color=C_TEXT, fontsize=11,
+        )
+        ax.set_xlabel("Time (s)", color=C_MUTED, fontsize=9)
+        ax.set_ylabel(f"{y_suffix.replace('_', ' ')} (m)", color=C_MUTED, fontsize=9)
+
+        times = traj["time_s"].values
+
+        for side, col in [("left", C_LEFT_FOOT), ("right", C_RIGHT_FOOT)]:
+            col_name = f"{side}_{y_suffix}"
+            if col_name not in traj.columns:
+                continue
+            ax.plot(times, traj[col_name].values, color=col, linewidth=1,
+                    label=f"{side} {y_suffix}", alpha=0.8)
+
+        if evts is not None and not evts.empty:
+            for side, col, marker in [("left", C_LEFT_FOOT, "v"), ("right", C_RIGHT_FOOT, "^")]:
+                col_name = f"{side}_{y_suffix}"
+                if col_name not in traj.columns:
+                    continue
+                side_evts = evts[(evts["foot"] == side) & (evts["event_type"] == event_type)]
+                if side_evts.empty:
+                    continue
+                evt_times = side_evts["time_s"].values
+                traj_times = traj["time_s"].values
+                traj_y = traj[col_name].values
+                evt_y = [traj_y[np.argmin(np.abs(traj_times - et))] for et in evt_times]
+                ax.scatter(evt_times, evt_y, color=col, marker=marker, s=40, zorder=5,
+                           label=f"{side} {event_type} ({len(evt_times)})")
+
+        for bev in boundaries:
+            color = "#5cb85c" if bev["event"] == "enter" else "#e05c5c"
+            ax.axvline(bev["time_s"], color=color, linestyle="--", linewidth=1, alpha=0.7)
+
+        ax.legend(facecolor=C_SURFACE, labelcolor=C_TEXT, fontsize=8)
+        fig.tight_layout(pad=0.5)
+        canvas = FigureCanvas(fig)
+        plt.close(fig)
+        self._plot_layout.addWidget(canvas)
+
+
 # ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
@@ -964,12 +1332,14 @@ class MainWindow(QMainWindow):
         self._sub_selector.setFixedWidth(180)
 
         self._video_tab    = VideoTab()
+        self._diag_tab     = DiagnosticsTab()
         self._st_tab       = ParameterTab("Single-Task Gait Parameters")
         self._dt_tab       = ParameterTab("Dual-Task Gait Parameters")
         self._dtc_tab      = DTCTab()
         self._raw_tab      = RawDataTab()
 
         self._tabs.addTab(self._video_tab, "📽  Annotated Video")
+        self._tabs.addTab(self._diag_tab,  "🔬 Diagnostics")
         self._tabs.addTab(self._st_tab,    "🦶 ST Parameters")
         self._tabs.addTab(self._dt_tab,    "🧮 DT Parameters")
         self._tabs.addTab(self._dtc_tab,   "📊 Dual-Task Cost")
@@ -1022,6 +1392,20 @@ class MainWindow(QMainWindow):
             self._st_tab.load_data(results.get("remove_outliers_st"))
             self._dt_tab.load_data(results.get("remove_outliers_dt"))
 
+            self._diag_tab.load_data(
+                traj_st=results.get("preprocess_st"),
+                traj_dt=results.get("preprocess_dt"),
+                events_st=results.get("detect_events_st"),
+                events_dt=results.get("detect_events_dt"),
+                raw_strides_st=results.get("calc_params_st"),
+                raw_strides_dt=results.get("calc_params_dt"),
+                clean_strides_st=results.get("remove_outliers_st"),
+                clean_strides_dt=results.get("remove_outliers_dt"),
+                boundaries_csv_st=self._runner.st_boundaries_csv if self._runner else "",
+                boundaries_csv_dt=self._runner.dt_boundaries_csv if self._runner else "",
+                speed_factor=self._runner.speed_factor if self._runner else 1.0,
+            )
+
             dtc_payload = results.get("dtc", {})
             if isinstance(dtc_payload, dict):
                 self._dtc_tab.load_data(
@@ -1042,9 +1426,9 @@ class MainWindow(QMainWindow):
                     self._video_tab.load_videos(st_path=st_vid, dt_path=dt_vid)
                     self._tabs.setCurrentIndex(0)  # jump to video tab
                 else:
-                    self._tabs.setCurrentIndex(3)  # jump to DTC tab
+                    self._tabs.setCurrentIndex(1)  # jump to diagnostics tab
             else:
-                self._tabs.setCurrentIndex(3)
+                self._tabs.setCurrentIndex(1)
         except Exception as e:
             QMessageBox.warning(self, "Display Error", str(e))
 

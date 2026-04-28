@@ -225,9 +225,9 @@ def load_trc(trc_path: str | Path, fps: float = 120.0) -> tuple[pd.DataFrame, fl
         "right_toe_y":  kpt_data[_KPT_RIGHT_TOE][1].values,
     })
 
-    # Recompute time_s from frame number and fps (header fps wins over
-    # manually supplied fps, but only if the header parse succeeded)
-    out["time_s"] = out["frame"] / fps_from_header
+    # The TRC 'Time' column (read into out["time_s"]) already contains the 
+    # correct timestamps (including any segment offsets from stitching), 
+    # so we DO NOT recompute it from frame/fps here.
 
     # Optionally include ankles
     for side, kpt_name in [("left",  _KPT_LEFT_ANK),
