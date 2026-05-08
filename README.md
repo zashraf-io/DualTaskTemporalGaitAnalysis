@@ -50,6 +50,8 @@ This tool is designed for researchers and clinicians studying **dual-task gait a
 - **Boundary Timestamps** — Optional enter/exit CSV files to automatically exclude strides when the participant is out of frame.
 - **Segment Processing Mode** — Splits videos into valid segments using boundary timestamps before pose estimation, eliminating phantom tracking in out-of-frame gaps.
 - **Interactive Results** — Time-series plots of stride parameters (left/right foot, outliers highlighted), DTC bar charts, and a filterable raw data table.
+- **Self-Contained Output** — Saved output folders contain all necessary metadata, boundary copies, and CSVs to be loaded again without external dependencies.
+- **Load / Rerun Analysis** — Rapidly load previous results or re-run downstream analysis on cached TRC data directly from the UI without re-running pose estimation.
 - **Batch Processing** — GUI and command-line mode for processing multiple participants from a dataset directory.
 - **Slow-Motion Support** — Speed factor correction for videos recorded at high FPS and played back at lower FPS.
 - **CSV Export** — All intermediate and final results saved as CSV files for further analysis.
@@ -178,6 +180,7 @@ For each condition, you can provide:
 - **Output directory** — Where result CSV files and logs will be saved. Default: `./out`. A subdirectory named after the participant ID will be created automatically.
 - **Save Video** — When checked, Sports2D generates annotated videos with pose overlays. Disabled by default (saves processing time and VRAM).
 - **Segment Mode** — When checked, videos are split into valid segments using boundary timestamps before pose estimation. Each segment is processed independently, eliminating phantom tracking when the participant is out of frame. Requires boundary CSV files. If a boundary CSV is not available for a specific video, that video falls back to full-video processing automatically.
+- **Invert Y-Axis** — Negates all Y coordinates during preprocessing. Enable this for subjects whose trajectory graphs appear vertically flipped due to camera orientation or pose estimation artifacts.
 
 #### Run Analysis
 
@@ -193,7 +196,10 @@ Clicking **▶ Run Analysis** starts the pipeline. Progress is shown via:
 
 ### Right Panel — Results Tabs
 
-After the pipeline completes, results are displayed across five tabs:
+After the pipeline completes, results are displayed across five tabs. In the top right corner of the tab bar, there are two utilities:
+
+- **📂 Load Results** — Browse to an existing `out/sub_XX/` folder to view previously processed results instantly without re-running the pipeline.
+- **🔄 Rerun Analysis** — Select an existing output folder to re-run only the downstream analysis (event detection, parameters, outlier removal, DTC) using its cached TRC data. Useful for testing code or parameter changes without waiting for Sports2D.
 
 #### 📽 Annotated Video
 
@@ -369,6 +375,7 @@ When video input is used, a `sports2d_st/` or `sports2d_dt/` subdirectory contai
 | Output directory | `./out` | Root directory for all outputs |
 | Save Video | unchecked | Generate Sports2D annotated video |
 | Segment Mode | unchecked | Split video into valid segments before processing |
+| Invert Y-Axis | unchecked | Negates Y-coordinates if tracking appears vertically flipped |
 
 ### JSON Config (CLI Only)
 
@@ -445,6 +452,11 @@ If Segment Mode is enabled but a boundary CSV is not available for a specific vi
 
 - The pipeline auto-detects FPS from the TRC header. If FPS detection fails, the fallback value from the UI is used. Ensure the FPS field is set correctly.
 - For very short walking videos (< 3 seconds), there may not be enough strides for meaningful analysis. Aim for at least 5-6 seconds of walking.
+- If all stance ratios are extremely low, check if your video requires `Invert Y-Axis` to be enabled.
+
+### Graphs appear vertically flipped
+
+- Enable the **Invert Y-Axis** checkbox in the Processing Options (or add `invert_y: true` to the participant's `master.csv` config row). This applies an unconditional negation to the Y coordinates before event detection.
 
 ### DTC values are all NaN
 
