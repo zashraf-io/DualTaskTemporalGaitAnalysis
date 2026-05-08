@@ -104,14 +104,14 @@ def remove_outliers(
     df["interrupted"]      = False
     df["removal_reason"]   = ""
 
+    # Label pre-existing outliers (from parameter_calculator.flag_outliers)
+    df.loc[df["is_outlier"] == True, "removal_reason"] = "threshold"
+
     # ------------------------------------------------------------------
     # Boundary stride exclusion
     # ------------------------------------------------------------------
     if boundaries_csv:
         df = _mark_boundary_strides(df, boundaries_csv)
-
-    # Populate removal_reason for inspection
-    df.loc[df["is_outlier"] == True, "removal_reason"] = "boundary"
 
     return df
 
