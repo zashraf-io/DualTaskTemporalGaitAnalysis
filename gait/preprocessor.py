@@ -65,6 +65,7 @@ def preprocess(
     cutoff_hz: float = _DEFAULT_CUTOFF_HZ,
     order: int = _DEFAULT_ORDER,
     ensure_y_up: bool = True,
+    force_invert_y: bool = False,
 ) -> pd.DataFrame:
     """
     Optionally filter trajectory data and ensure the coordinate convention.
@@ -90,6 +91,10 @@ def preprocess(
         median is negative, negate all Y columns so that ground is near 0 and
         "up" is positive.  This guards against accidentally loading a
         pixel-coordinate TRC where Y increases downward.
+    force_invert_y : bool
+        If True, unconditionally negate all Y columns regardless of the
+        ensure_y_up heuristic.  Use this for subjects whose Sports2D output
+        has an inverted Y-axis that the automatic heuristic does not catch.
 
     Returns
     -------
@@ -102,7 +107,11 @@ def preprocess(
     # ------------------------------------------------------------------
     # 1. Y-axis orientation check
     # ------------------------------------------------------------------
-    if ensure_y_up:
+    if force_invert_y:
+        # Manual override: unconditionally negate all Y columns
+        y_cols = [c for c in df.columns if c.endswith("_y")]
+        df[y_cols] = -df[y_cols]
+    elif ensure_y_up:
         median_heel_y = np.nanmedian(df["left_heel_y"].values)
         if median_heel_y < 0:
             # Y is likely downward — negate all Y columns

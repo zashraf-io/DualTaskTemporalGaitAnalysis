@@ -76,6 +76,7 @@ class ParticipantConfig:
     height_m: float = 1.70
     fps: float = 30.0
     speed_factor: float = 1.0
+    invert_y: bool = False
 
 
 class ErrorAction(Enum):
@@ -151,10 +152,15 @@ def parse_master_csv(csv_path: Path) -> dict:
         )
         height /= 100.0
 
+    # invert_y: accept 1/0, true/false, yes/no (case-insensitive)
+    invert_raw = str(row.get("invert_y", "false")).strip().lower()
+    invert_y = invert_raw in ("1", "true", "yes")
+
     return {
         "height": height,
         "fps": float(row.get("fps", 30.0)),
         "speed_factor": float(row.get("speed_factor", 1.0)),
+        "invert_y": invert_y,
     }
 
 
@@ -171,6 +177,7 @@ def build_participant_config(folder: Path) -> ParticipantConfig:
         height_m=meta["height"],
         fps=meta["fps"],
         speed_factor=meta["speed_factor"],
+        invert_y=meta["invert_y"],
     )
 
 
@@ -203,6 +210,7 @@ def run_single_participant_sync(
         st_boundaries_csv=str(config.st_boundaries_csv),
         dt_boundaries_csv=str(config.dt_boundaries_csv),
         speed_factor=config.speed_factor,
+        invert_y=config.invert_y,
     )
 
     # Run synchronously (call run() directly instead of start())
@@ -711,6 +719,7 @@ class BatchPipelineRunner(QThread):
                     speed_factor=cfg.speed_factor,
                     save_video=self.save_video,
                     segment_mode=self.segment_mode,
+                    invert_y=cfg.invert_y,
                 )
 
                 # Forward progress signals

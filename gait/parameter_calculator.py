@@ -243,7 +243,9 @@ def flag_outliers(df: pd.DataFrame) -> pd.DataFrame:
     checks = {
         "stride_times":   (0.4, 3.0),   # Normal: 0.8–1.4 s
         "stride_lengths": (0.2, 3.0),   # Normal: 1.0–1.8 m
-        "stance_ratios":  (0.3, 0.9),   # Normal: 0.55–0.65
+        "stance_ratios":  (0.1, 0.95),  # Relaxed from DUO-GAIT's (0.3, 0.9)
+                                         # — video-domain FO detection yields
+                                         #   systematically lower stance ratios
         "swing_times":    (0.1, 2.0),   # Normal: 0.3–0.5 s
         "stance_times":   (0.2, 2.5),   # Normal: 0.5–0.9 s
     }

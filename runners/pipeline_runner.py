@@ -125,6 +125,7 @@ class PipelineRunner(QThread):
         speed_factor: float = 1.0,
         save_video: bool = False,
         segment_mode: bool = False,
+        invert_y: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -143,6 +144,7 @@ class PipelineRunner(QThread):
         self.speed_factor      = speed_factor
         self.save_video        = save_video
         self.segment_mode      = segment_mode
+        self.invert_y          = invert_y
 
         self._stages = self._build_stage_graph()
         self._results: dict = {}
@@ -284,14 +286,16 @@ class PipelineRunner(QThread):
         if name == "preprocess_st":
             df = preprocessor.preprocess(
                 self._results["load_st"], fps=self._get_fps("st"),
-                apply_filter=self.apply_filter
+                apply_filter=self.apply_filter,
+                force_invert_y=self.invert_y,
             )
             return df
 
         if name == "preprocess_dt":
             df = preprocessor.preprocess(
                 self._results["load_dt"], fps=self._get_fps("dt"),
-                apply_filter=self.apply_filter
+                apply_filter=self.apply_filter,
+                force_invert_y=self.invert_y,
             )
             return df
 
@@ -388,9 +392,48 @@ class PipelineRunner(QThread):
             dtc_sum = dtc_calculator.dtc_summary_table(dtc_df)
             dtc_df.to_csv(out / "06_dtc.csv",         index=False)
             dtc_sum.to_csv(out / "07_dtc_summary.csv", index=False)
+
+            # Save run metadata & boundary copies for the Load Results feature
+            self._save_run_metadata(out)
+
             return {"dtc": dtc_df, "dtc_summary": dtc_sum}
 
         raise ValueError(f"Unknown stage: {name}")
+
+    # ------------------------------------------------------------------
+    # Run metadata persistence (for Load Results feature)
+    # ------------------------------------------------------------------
+
+    def _save_run_metadata(self, out: Path):
+        """
+        Save run configuration and boundary CSVs into the output directory.
+
+        This makes the output folder fully self-contained so that the
+        "Load Results" feature can reconstruct the diagnostics view
+        without needing the original input files.
+        """
+        import json
+        import shutil
+
+        # 1. Save run config JSON
+        config = {
+            "participant_id": self.participant_id,
+            "speed_factor": self.speed_factor,
+            "invert_y": self.invert_y,
+            "fps": self.fps,
+            "height_m": self.height_m,
+            "st_boundaries_csv": self.st_boundaries_csv,
+            "dt_boundaries_csv": self.dt_boundaries_csv,
+        }
+        config_path = out / "_run_config.json"
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+        # 2. Copy boundary CSVs into the output directory
+        for cond, src_path_str in [("st", self.st_boundaries_csv),
+                                    ("dt", self.dt_boundaries_csv)]:
+            if src_path_str and Path(src_path_str).is_file():
+                dst = out / f"_boundaries_{cond}.csv"
+                shutil.copy2(src_path_str, dst)
 
     # ------------------------------------------------------------------
     # Helpers

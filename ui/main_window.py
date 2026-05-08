@@ -330,6 +330,15 @@ class InputPanel(QWidget):
             "out-of-frame gaps. Requires a boundaries CSV."
         )
         cb_row.addWidget(self.segment_mode_cb)
+
+        self.invert_y_cb = QCheckBox("Invert Y-Axis")
+        self.invert_y_cb.setChecked(False)
+        self.invert_y_cb.setToolTip(
+            "Negate all Y coordinates during preprocessing.\n"
+            "Enable this for subjects whose trajectory graphs\n"
+            "appear vertically flipped."
+        )
+        cb_row.addWidget(self.invert_y_cb)
         lay_out.addLayout(cb_row)
 
         root.addWidget(grp_out)
@@ -408,6 +417,7 @@ class InputPanel(QWidget):
             "speed_factor":   self.speed_factor_spin.value(),
             "save_video":     self.save_video_cb.isChecked(),
             "segment_mode":   self.segment_mode_cb.isChecked(),
+            "invert_y":       self.invert_y_cb.isChecked(),
         }
         if not config["st_input"] or not config["dt_input"]:
             QMessageBox.warning(self, "Missing Input", "Please provide ST and DT file paths.")
@@ -1345,6 +1355,39 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._dtc_tab,   "📊 Dual-Task Cost")
         self._tabs.addTab(self._raw_tab,   "📋 Raw Data")
 
+        # Corner buttons — Load Results + Rerun Analysis
+        corner = QWidget()
+        corner_lay = QHBoxLayout(corner)
+        corner_lay.setContentsMargins(0, 0, 4, 0)
+        corner_lay.setSpacing(4)
+
+        btn_style = (
+            f"QPushButton {{ background: {C_SURFACE}; color: {C_TEXT}; "
+            f"border: 1px solid {C_ACCENT}; border-radius: 4px; padding: 4px 10px; }}"
+            f"QPushButton:hover {{ background: {C_ACCENT}; }}"
+        )
+
+        load_btn = QPushButton("📂 Load Results")
+        load_btn.setToolTip(
+            "Load a previously processed participant's output folder\n"
+            "(e.g. out/sub_02/) to view results without re-running the pipeline."
+        )
+        load_btn.setStyleSheet(btn_style)
+        load_btn.clicked.connect(self._on_load_results)
+        corner_lay.addWidget(load_btn)
+
+        rerun_btn = QPushButton("🔄 Rerun Analysis")
+        rerun_btn.setToolTip(
+            "Re-run the downstream analysis (event detection → parameters\n"
+            "→ outlier removal → aggregation → DTC) on an existing output\n"
+            "folder using its cached TRC data and saved config."
+        )
+        rerun_btn.setStyleSheet(btn_style)
+        rerun_btn.clicked.connect(self._on_rerun_analysis)
+        corner_lay.addWidget(rerun_btn)
+
+        self._tabs.setCornerWidget(corner)
+
     # ------------------------------------------------------------------
     # Pipeline control
     # ------------------------------------------------------------------
@@ -1365,6 +1408,7 @@ class MainWindow(QMainWindow):
             speed_factor   = config.get("speed_factor", 1.0),
             save_video     = config.get("save_video", False),
             segment_mode   = config.get("segment_mode", False),
+            invert_y       = config.get("invert_y", False),
         )
         self._runner.progress.connect(self._on_progress)
         self._runner.finished.connect(self._on_finished)
@@ -1435,6 +1479,180 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_error(self, message: str):
         self._input_panel.on_error(message)
+
+    # ------------------------------------------------------------------
+    # Load Results (from saved output directory)
+    # ------------------------------------------------------------------
+
+    def _on_load_results(self):
+        """Browse for an output directory and populate all tabs from saved CSVs."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Participant Output Folder (e.g. out/sub_02)"
+        )
+        if not folder:
+            return
+        try:
+            self._load_results_from_dir(Path(folder))
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", str(e)[:800])
+
+    def _load_results_from_dir(self, out: Path):
+        """
+        Read all numbered CSVs and run metadata from an output directory
+        and populate the UI tabs as if the pipeline had just finished.
+        """
+        import json
+
+        def _read_csv(name: str) -> Optional[pd.DataFrame]:
+            p = out / name
+            if p.is_file():
+                return pd.read_csv(p)
+            return None
+
+        # Load run config (for boundaries and speed_factor)
+        config_path = out / "_run_config.json"
+        run_cfg = {}
+        if config_path.is_file():
+            run_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+
+        speed_factor = run_cfg.get("speed_factor", 1.0)
+
+        # Determine boundary CSV paths — prefer embedded copies, fall back to config
+        boundaries_st = ""
+        boundaries_dt = ""
+        embedded_st = out / "_boundaries_st.csv"
+        embedded_dt = out / "_boundaries_dt.csv"
+        if embedded_st.is_file():
+            boundaries_st = str(embedded_st)
+        elif run_cfg.get("st_boundaries_csv"):
+            boundaries_st = run_cfg["st_boundaries_csv"]
+        if embedded_dt.is_file():
+            boundaries_dt = str(embedded_dt)
+        elif run_cfg.get("dt_boundaries_csv"):
+            boundaries_dt = run_cfg["dt_boundaries_csv"]
+
+        # Read all output CSVs
+        traj_st       = _read_csv("01_raw_trajectories_st.csv")
+        traj_dt       = _read_csv("01_raw_trajectories_dt.csv")
+        events_st     = _read_csv("02_events_st.csv")
+        events_dt     = _read_csv("02_events_dt.csv")
+        strides_raw_st = _read_csv("03_strides_raw_st.csv")
+        strides_raw_dt = _read_csv("03_strides_raw_dt.csv")
+        strides_clean_st = _read_csv("04_strides_cleaned_st.csv")
+        strides_clean_dt = _read_csv("04_strides_cleaned_dt.csv")
+        agg_st        = _read_csv("05_aggregated_st.csv")
+        agg_dt        = _read_csv("05_aggregated_dt.csv")
+        dtc_df        = _read_csv("06_dtc.csv")
+        dtc_summary   = _read_csv("07_dtc_summary.csv")
+
+        # Apply the same preprocessing (Y-axis correction) as the live pipeline
+        from gait import preprocessor
+        invert_y = run_cfg.get("invert_y", False)
+        fps = run_cfg.get("fps", 30.0)
+        if traj_st is not None and not traj_st.empty:
+            traj_st = preprocessor.preprocess(traj_st, fps=fps, force_invert_y=invert_y)
+        if traj_dt is not None and not traj_dt.empty:
+            traj_dt = preprocessor.preprocess(traj_dt, fps=fps, force_invert_y=invert_y)
+
+        # Populate tabs
+        self._st_tab.load_data(strides_clean_st)
+        self._dt_tab.load_data(strides_clean_dt)
+
+        self._diag_tab.load_data(
+            traj_st=traj_st,
+            traj_dt=traj_dt,
+            events_st=events_st,
+            events_dt=events_dt,
+            raw_strides_st=strides_raw_st,
+            raw_strides_dt=strides_raw_dt,
+            clean_strides_st=strides_clean_st,
+            clean_strides_dt=strides_clean_dt,
+            boundaries_csv_st=boundaries_st,
+            boundaries_csv_dt=boundaries_dt,
+            speed_factor=speed_factor,
+        )
+
+        if dtc_df is not None and dtc_summary is not None:
+            self._dtc_tab.load_data(dtc_df, dtc_summary)
+
+        self._raw_tab.load_data(strides_raw_st, strides_raw_dt)
+
+        # Switch to diagnostics tab
+        self._tabs.setCurrentWidget(self._diag_tab)
+
+        pid = run_cfg.get("participant_id", out.name)
+        self.setWindowTitle(f"Gait Analysis — {pid} (loaded)")
+
+    # ------------------------------------------------------------------
+    # Rerun Analysis (from cached TRC + saved config)
+    # ------------------------------------------------------------------
+
+    def _on_rerun_analysis(self):
+        """Browse for an output directory and re-run the analysis pipeline
+        using cached TRC files and the saved _run_config.json."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Participant Output Folder to Rerun (e.g. out/sub_02)"
+        )
+        if not folder:
+            return
+
+        out = Path(folder)
+        import json
+
+        # Load run config
+        config_path = out / "_run_config.json"
+        if not config_path.is_file():
+            QMessageBox.warning(
+                self, "Missing Config",
+                f"No _run_config.json found in:\n{out}\n\n"
+                "Run the pipeline at least once first to generate this file."
+            )
+            return
+
+        run_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+
+        # Find cached merged TRCs
+        st_trc = out / "sports2d_st" / "merged_person00.trc"
+        dt_trc = out / "sports2d_dt" / "merged_person00.trc"
+        if not st_trc.is_file() or not dt_trc.is_file():
+            QMessageBox.warning(
+                self, "Missing TRC",
+                f"Cached TRC files not found in:\n{out}\n\n"
+                "Expected:\n"
+                f"  {st_trc}\n"
+                f"  {dt_trc}"
+            )
+            return
+
+        # Resolve boundary CSVs — prefer embedded copies
+        boundaries_st = str(out / "_boundaries_st.csv") if (out / "_boundaries_st.csv").is_file() \
+            else run_cfg.get("st_boundaries_csv", "")
+        boundaries_dt = str(out / "_boundaries_dt.csv") if (out / "_boundaries_dt.csv").is_file() \
+            else run_cfg.get("dt_boundaries_csv", "")
+
+        # Build pipeline config and run
+        config = {
+            "participant_id":    run_cfg.get("participant_id", out.name),
+            "st_input":          str(st_trc),
+            "dt_input":          str(dt_trc),
+            "st_is_video":       False,   # TRC input — skips Sports2D
+            "dt_is_video":       False,
+            "height_m":          run_cfg.get("height_m", 1.70),
+            "fps":               run_cfg.get("fps", 30.0),
+            "output_dir":        str(out.parent),  # parent of sub_XX
+            "st_boundaries_csv": boundaries_st,
+            "dt_boundaries_csv": boundaries_dt,
+            "speed_factor":      run_cfg.get("speed_factor", 1.0),
+            "save_video":        False,
+            "segment_mode":      False,
+            "invert_y":          run_cfg.get("invert_y", False),
+        }
+
+        self.setWindowTitle(f"Gait Analysis — {config['participant_id']} (rerunning…)")
+        self._input_panel.progress_bar.setValue(0)
+        self._input_panel.stage_log.clear()
+        self._input_panel.run_btn.setEnabled(False)
+        self._on_run_requested(config)
 
     # ------------------------------------------------------------------
     # Batch pipeline control
